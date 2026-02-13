@@ -76,6 +76,10 @@ class _ToastWidget(QFrame):
         self._duration_ms = duration_ms
         colour = _TOAST_COLOURS.get(toast_type, _TOAST_COLOURS[ToastType.INFO])
 
+        # Re-enable mouse events so close button works
+        # (parent ToastManager is transparent for mouse events)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+
         self.setFixedHeight(48)
         self.setMinimumWidth(280)
         self.setMaximumWidth(400)
@@ -164,7 +168,7 @@ class ToastManager(QWidget):
         super().__init__(parent)
         self._toasts: list[_ToastWidget] = []
         # Fully transparent, no interaction with underlying widgets
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setStyleSheet("background: transparent;")
         self.raise_()
