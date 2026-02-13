@@ -20,6 +20,8 @@ from PySide6.QtWidgets import (
 
 from yoto_up.api.client import YotoClient
 from yoto_up_gui.widgets.nav_drawer import NavigationDrawer
+from yoto_up_gui.widgets.toast import ToastManager, ToastType
+from yoto_up_gui.widgets.shortcut_overlay import ShortcutOverlay
 
 # Page implementations
 from yoto_up_gui.pages.dashboard import DashboardPage
@@ -196,6 +198,12 @@ class MainWindow(QMainWindow):
         self._card_detail_overlay.delete_requested.connect(self._on_overlay_delete_requested)
         # closed signal -- no action needed, overlay hides itself
 
+        # ---- toast notifications ------------------------------------------------
+        self._toast_manager = ToastManager(central)
+
+        # ---- shortcut help overlay -------------------------------------------
+        self._shortcut_overlay = ShortcutOverlay(central)
+
         # ---- status bar -----------------------------------------------------
         self._status_bar = QStatusBar()
         self.setStatusBar(self._status_bar)
@@ -249,6 +257,17 @@ class MainWindow(QMainWindow):
         """Programmatically navigate to a page by key."""
         self._switch_page(key)
 
+    # ---- toast helpers ---------------------------------------------------------
+
+    def show_toast(
+        self,
+        message: str,
+        toast_type: ToastType = ToastType.INFO,
+        duration_ms: int = 4000,
+    ) -> None:
+        """Show a toast notification."""
+        self._toast_manager.show_toast(message, toast_type, duration_ms)
+
     # ---- client distribution -----------------------------------------------
 
     def _distribute_client(self) -> None:
@@ -256,6 +275,8 @@ class MainWindow(QMainWindow):
         for page in self._pages.values():
             if hasattr(page, "set_client") and callable(page.set_client):
                 page.set_client(self._client)
+            if hasattr(page, "set_toast_callback") and callable(page.set_toast_callback):
+                page.set_toast_callback(self.show_toast)
 
     # ---- worker lifecycle --------------------------------------------------
 
@@ -386,6 +407,16 @@ class MainWindow(QMainWindow):
         page = self._pages.get(key)
         if page is None:
             return
+
+        # Guard: check for unsaved changes when leaving the card editor
+        current = self._stack.currentWidget()
+        if (
+            isinstance(current, CardEditorPage)
+            and current is not page
+            and not current.confirm_discard()
+        ):
+            return
+
         self._stack.setCurrentWidget(page)
         self._title_label.setText(self._page_titles.get(key, ""))
         self._nav_drawer.set_active_page(key)
@@ -399,9 +430,24 @@ class MainWindow(QMainWindow):
 
     # ---- resize forwarding -------------------------------------------------
 
+    # ---- keyboard shortcuts ------------------------------------------------
+
+    def keyPressEvent(self, event) -> None:
+        key = event.key()
+        # Toggle shortcut overlay on ? or Ctrl+/
+        if key == Qt.Key.Key_Question:
+            self._shortcut_overlay.toggle()
+            return
+        if key == Qt.Key.Key_Slash and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self._shortcut_overlay.toggle()
+            return
+        super().keyPressEvent(event)
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._card_detail_overlay.parentResizeEvent()
+        self._toast_manager.reposition()
+        self._shortcut_overlay.parentResizeEvent()
 
     # ---- cleanup (Fix 1: close YotoClient on window close) -----------------
 

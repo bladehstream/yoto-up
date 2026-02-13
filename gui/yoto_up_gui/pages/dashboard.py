@@ -7,7 +7,8 @@ a background ``QThread`` so the UI remains responsive.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal, QThread
+from PySide6.QtCore import Qt, Signal, QThread, QSize
+from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -73,6 +74,7 @@ class _RecentCardTile(QFrame):
                  parent: QWidget | None = None):
         super().__init__(parent)
         self._card_id = card_id
+        self._image_worker = None
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedSize(160, 190)
         self.setObjectName("recentCardTile")
@@ -105,6 +107,10 @@ class _RecentCardTile(QFrame):
         self._cover_label = cover_label
         layout.addWidget(cover_label)
 
+        # Load cover image if URL is available
+        if cover_url:
+            self._load_cover(cover_url)
+
         # Title
         title_label = QLabel(title)
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -120,6 +126,32 @@ class _RecentCardTile(QFrame):
         elided = metrics.elidedText(title, Qt.TextElideMode.ElideRight, 138)
         title_label.setText(elided)
         layout.addWidget(title_label)
+
+    def _load_cover(self, url: str) -> None:
+        """Start async image download for the cover."""
+        from yoto_up_gui.widgets.image_loader import load_image_async
+        self._cover_label.setText("Loading...")
+        self._image_worker = load_image_async(
+            url,
+            callback=self._on_image_loaded,
+            error_callback=self._on_image_error,
+            size=QSize(144, 130),
+        )
+
+    def _on_image_loaded(self, url: str, image: QImage) -> None:
+        """Set the cover pixmap from the downloaded image."""
+        pixmap = QPixmap.fromImage(image)
+        self._cover_label.setPixmap(
+            pixmap.scaled(
+                self._cover_label.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+
+    def _on_image_error(self, url: str, error: str) -> None:
+        """Fall back to placeholder on error."""
+        self._cover_label.setText("No Cover")
 
     # -- interaction ---------------------------------------------------------
 

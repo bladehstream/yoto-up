@@ -6,7 +6,7 @@ import os
 import uuid
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal, QThread
+from PySide6.QtCore import Qt, Signal, QThread, QUrl
 from PySide6.QtGui import QPixmap, QIcon
 from PySide6.QtWidgets import (
     QComboBox,
@@ -87,6 +87,60 @@ class Worker(QThread):
 
 
 # ---------------------------------------------------------------------------
+# Drag-and-drop tree widget for chapters/tracks
+# ---------------------------------------------------------------------------
+
+
+class _ChapterTreeWidget(QTreeWidget):
+    """QTreeWidget subclass that accepts external audio file drops.
+
+    Preserves the internal drag-drop reorder behaviour while also
+    accepting file URLs dragged from the system file manager.
+    """
+
+    files_dropped = Signal(list)  # list[str] of file paths
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+
+    def dragEnterEvent(self, event) -> None:
+        mime = event.mimeData()
+        if mime.hasUrls():
+            # Check if any URLs are audio files
+            for url in mime.urls():
+                if url.isLocalFile():
+                    suffix = Path(url.toLocalFile()).suffix.lower()
+                    if suffix in _AUDIO_EXTENSIONS:
+                        event.acceptProposedAction()
+                        return
+        # Fall through to default (internal reorder)
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:
+        mime = event.mimeData()
+        if mime.hasUrls():
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event) -> None:
+        mime = event.mimeData()
+        if mime.hasUrls():
+            paths = []
+            for url in mime.urls():
+                if url.isLocalFile():
+                    path = url.toLocalFile()
+                    suffix = Path(path).suffix.lower()
+                    if suffix in _AUDIO_EXTENSIONS:
+                        paths.append(path)
+            if paths:
+                self.files_dropped.emit(paths)
+                event.acceptProposedAction()
+                return
+        super().dropEvent(event)
+
+
+# ---------------------------------------------------------------------------
 # CardEditorPage
 # ---------------------------------------------------------------------------
 
@@ -111,8 +165,12 @@ class CardEditorPage(QWidget):
         self._editing_card: Card | None = None
         self._cover_image_path: str | None = None
         self._worker: Worker | None = None
+        self._toast_callback = None
+        self._dirty: bool = False
+        self._populating: bool = False
 
         self._build_ui()
+        self._connect_dirty_signals()
         self.new_card()
 
     # ------------------------------------------------------------------
@@ -123,8 +181,30 @@ class CardEditorPage(QWidget):
         """Provide the authenticated :class:`YotoClient`."""
         self._client = client
 
+    def set_toast_callback(self, callback) -> None:
+        """Receive the main window's toast display callback."""
+        self._toast_callback = callback
+
+    def confirm_discard(self) -> bool:
+        """If there are unsaved changes, ask the user to confirm discard.
+
+        Returns ``True`` if navigation should proceed (no changes or user
+        clicked Discard), ``False`` if the user wants to stay.
+        """
+        if not self._dirty:
+            return True
+        reply = QMessageBox.question(
+            self,
+            "Unsaved Changes",
+            "You have unsaved changes. Discard them?",
+            QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        return reply == QMessageBox.StandardButton.Discard
+
     def edit_card(self, card: Card) -> None:
         """Populate the form with *card* data for editing."""
+        self._populating = True
         self._editing_card = card
         self._mode_label.setText("Edit Existing Card")
         self._mode_label.setStyleSheet(
@@ -191,9 +271,13 @@ class CardEditorPage(QWidget):
                 ch_item.setExpanded(True)
 
         self._save_btn.setText("Update Card")
+        self._populating = False
+        self._dirty = False
+        self._update_drop_hint()
 
     def new_card(self) -> None:
         """Clear the form for creating a new card."""
+        self._populating = True
         self._editing_card = None
         self._cover_image_path = None
         self._mode_label.setText("Create New Card")
@@ -213,6 +297,9 @@ class CardEditorPage(QWidget):
         self._cover_path_label.setText("")
         self._chapter_tree.clear()
         self._save_btn.setText("Save Card")
+        self._populating = False
+        self._dirty = False
+        self._update_drop_hint()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -349,8 +436,8 @@ class CardEditorPage(QWidget):
         )
         ch_layout = QVBoxLayout(chapters_group)
 
-        # Tree widget
-        self._chapter_tree = QTreeWidget()
+        # Tree widget (with external file drop support)
+        self._chapter_tree = _ChapterTreeWidget()
         self._chapter_tree.setHeaderLabels(["Name", "Duration", "Format"])
         self._chapter_tree.setColumnWidth(0, 260)
         self._chapter_tree.setColumnWidth(1, 80)
@@ -374,7 +461,19 @@ class CardEditorPage(QWidget):
             f"padding: 4px; border: none; font-weight: bold; }}"
             f"QTreeWidget::item:alternate {{ background: #2a2a3e; }}"
         )
+        self._chapter_tree.files_dropped.connect(self._on_files_dropped)
         ch_layout.addWidget(self._chapter_tree, 1)
+
+        # Drop hint label (shown when tree is empty)
+        self._drop_hint_label = QLabel(
+            "Drag audio files here or use the buttons below"
+        )
+        self._drop_hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._drop_hint_label.setStyleSheet(
+            f"color: {_SUBTEXT}; font-size: 12px; font-style: italic; "
+            f"padding: 8px; background: transparent;"
+        )
+        ch_layout.addWidget(self._drop_hint_label)
 
         # Action buttons row
         btn_row = QHBoxLayout()
@@ -460,6 +559,32 @@ class CardEditorPage(QWidget):
         return lbl
 
     # ------------------------------------------------------------------
+    # Dirty tracking
+    # ------------------------------------------------------------------
+
+    def _connect_dirty_signals(self) -> None:
+        """Connect form widget change signals to _mark_dirty."""
+        self._title_edit.textChanged.connect(self._mark_dirty)
+        self._author_edit.textChanged.connect(self._mark_dirty)
+        self._description_edit.textChanged.connect(self._mark_dirty)
+        self._category_combo.currentIndexChanged.connect(self._mark_dirty)
+        self._genre_edit.textChanged.connect(self._mark_dirty)
+        self._tags_edit.textChanged.connect(self._mark_dirty)
+        self._min_age_spin.valueChanged.connect(self._mark_dirty)
+        self._max_age_spin.valueChanged.connect(self._mark_dirty)
+        # Tree model changes
+        model = self._chapter_tree.model()
+        if model:
+            model.rowsInserted.connect(self._mark_dirty)
+            model.rowsRemoved.connect(self._mark_dirty)
+            model.dataChanged.connect(self._mark_dirty)
+
+    def _mark_dirty(self, *_args) -> None:
+        """Mark the form as having unsaved changes."""
+        if not self._populating:
+            self._dirty = True
+
+    # ------------------------------------------------------------------
     # Cover image
     # ------------------------------------------------------------------
 
@@ -473,6 +598,7 @@ class CardEditorPage(QWidget):
         if path:
             self._cover_image_path = path
             self._cover_path_label.setText(os.path.basename(path))
+            self._mark_dirty()
             pixmap = QPixmap(path)
             if not pixmap.isNull():
                 scaled = pixmap.scaled(
@@ -503,6 +629,7 @@ class CardEditorPage(QWidget):
         ch_item.setData(0, Qt.ItemDataRole.UserRole, "chapter")
         ch_item.setExpanded(True)
         self._chapter_tree.setCurrentItem(ch_item)
+        self._update_drop_hint()
 
     def _add_track(self) -> None:
         """Add an audio file as a track to the currently selected chapter."""
@@ -561,6 +688,7 @@ class CardEditorPage(QWidget):
 
         ch_item.setExpanded(True)
         self._chapter_tree.setCurrentItem(ch_item)
+        self._update_drop_hint()
 
     def _add_track_to_chapter(
         self, chapter_item: QTreeWidgetItem, file_path: str,
@@ -603,6 +731,46 @@ class CardEditorPage(QWidget):
             idx = self._chapter_tree.indexOfTopLevelItem(current)
             if idx >= 0:
                 self._chapter_tree.takeTopLevelItem(idx)
+        self._update_drop_hint()
+
+    def _on_files_dropped(self, paths: list[str]) -> None:
+        """Handle audio files dropped onto the tree widget."""
+        # Find or create a chapter to add tracks to
+        current = self._chapter_tree.currentItem()
+        chapter_item = self._find_parent_chapter(current)
+        if chapter_item is None:
+            # Create a new chapter for the dropped files
+            chapter_item = QTreeWidgetItem(
+                self._chapter_tree,
+                [f"Chapter {self._chapter_tree.topLevelItemCount() + 1}", "", ""],
+            )
+            chapter_item.setFlags(
+                chapter_item.flags()
+                | Qt.ItemFlag.ItemIsDropEnabled
+                | Qt.ItemFlag.ItemIsDragEnabled
+                | Qt.ItemFlag.ItemIsEditable
+            )
+            chapter_item.setData(0, Qt.ItemDataRole.UserRole, "chapter")
+
+        for path in paths:
+            self._add_track_to_chapter(chapter_item, path)
+
+        chapter_item.setExpanded(True)
+        self._chapter_tree.setCurrentItem(chapter_item)
+        self._update_drop_hint()
+
+        if self._toast_callback:
+            from yoto_up_gui.widgets.toast import ToastType
+            count = len(paths)
+            self._toast_callback(
+                f"Added {count} track{'s' if count != 1 else ''}",
+                ToastType.SUCCESS,
+            )
+
+    def _update_drop_hint(self) -> None:
+        """Show/hide the drop hint based on whether the tree has items."""
+        has_items = self._chapter_tree.topLevelItemCount() > 0
+        self._drop_hint_label.setVisible(not has_items)
 
     @staticmethod
     def _find_parent_chapter(item: QTreeWidgetItem | None) -> QTreeWidgetItem | None:
@@ -621,7 +789,9 @@ class CardEditorPage(QWidget):
     # ------------------------------------------------------------------
 
     def _on_cancel(self) -> None:
-        """Reset and navigate away."""
+        """Reset and navigate away (guarded by unsaved changes check)."""
+        if not self.confirm_discard():
+            return
         self.new_card()
         self.navigate_to.emit("card_library")
 
@@ -649,16 +819,24 @@ class CardEditorPage(QWidget):
 
     def _on_save_finished(self, saved_card: Card) -> None:
         self._save_btn.setEnabled(True)
+        self._dirty = False
         card_id = saved_card.cardId or ""
         self._status_label.setText(f"Saved: {card_id}")
         self._status_label.setStyleSheet(f"color: {_GREEN}; font-size: 12px;")
+        if self._toast_callback:
+            from yoto_up_gui.widgets.toast import ToastType
+            self._toast_callback(f"Card saved successfully ({card_id})", ToastType.SUCCESS)
         self.card_saved.emit(card_id)
 
     def _on_save_error(self, msg: str) -> None:
         self._save_btn.setEnabled(True)
         self._status_label.setText(f"Error: {msg}")
         self._status_label.setStyleSheet(f"color: {_RED}; font-size: 12px;")
-        QMessageBox.critical(self, "Save Failed", msg)
+        if self._toast_callback:
+            from yoto_up_gui.widgets.toast import ToastType
+            self._toast_callback(f"Save failed: {msg}", ToastType.ERROR, 6000)
+        else:
+            QMessageBox.critical(self, "Save Failed", msg)
 
     # ------------------------------------------------------------------
     # Build card model from form state

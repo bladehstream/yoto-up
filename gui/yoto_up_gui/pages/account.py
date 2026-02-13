@@ -135,6 +135,7 @@ class AccountPage(QWidget):
         self._client: YotoClient | None = None
         self._auth_poll_worker: AuthPollWorker | None = None
         self._worker: Worker | None = None
+        self._toast_callback = None
 
         self._build_ui()
         self._load_settings_into_form()
@@ -147,6 +148,10 @@ class AccountPage(QWidget):
         """Provide the :class:`YotoClient` instance."""
         self._client = client
         self._refresh_auth_display()
+
+    def set_toast_callback(self, callback) -> None:
+        """Receive the main window's toast display callback."""
+        self._toast_callback = callback
 
     # ------------------------------------------------------------------
     # UI construction
@@ -534,9 +539,15 @@ class AccountPage(QWidget):
             AppSettings.save(settings)
             self._settings_status.setText("Settings saved.")
             self._settings_status.setStyleSheet(f"color: {_GREEN}; font-size: 11px;")
+            if self._toast_callback:
+                from yoto_up_gui.widgets.toast import ToastType
+                self._toast_callback("Settings saved", ToastType.SUCCESS)
         except Exception as exc:
             self._settings_status.setText(f"Error: {exc}")
             self._settings_status.setStyleSheet(f"color: {_RED}; font-size: 11px;")
+            if self._toast_callback:
+                from yoto_up_gui.widgets.toast import ToastType
+                self._toast_callback(f"Failed to save settings: {exc}", ToastType.ERROR)
 
     # ------------------------------------------------------------------
     # Data management
@@ -552,9 +563,15 @@ class AccountPage(QWidget):
                         count += 1
             self._data_status.setText(f"Cleared {count} cached icon(s).")
             self._data_status.setStyleSheet(f"color: {_GREEN}; font-size: 11px;")
+            if self._toast_callback:
+                from yoto_up_gui.widgets.toast import ToastType
+                self._toast_callback(f"Cleared {count} cached icon(s)", ToastType.SUCCESS)
         except Exception as exc:
             self._data_status.setText(f"Error: {exc}")
             self._data_status.setStyleSheet(f"color: {_RED}; font-size: 11px;")
+            if self._toast_callback:
+                from yoto_up_gui.widgets.toast import ToastType
+                self._toast_callback(f"Failed to clear icon cache: {exc}", ToastType.ERROR)
 
     def _clear_api_cache(self) -> None:
         try:
@@ -562,9 +579,15 @@ class AccountPage(QWidget):
                 API_CACHE_FILE.unlink()
             self._data_status.setText("API cache cleared.")
             self._data_status.setStyleSheet(f"color: {_GREEN}; font-size: 11px;")
+            if self._toast_callback:
+                from yoto_up_gui.widgets.toast import ToastType
+                self._toast_callback("API cache cleared", ToastType.SUCCESS)
         except Exception as exc:
             self._data_status.setText(f"Error: {exc}")
             self._data_status.setStyleSheet(f"color: {_RED}; font-size: 11px;")
+            if self._toast_callback:
+                from yoto_up_gui.widgets.toast import ToastType
+                self._toast_callback(f"Failed to clear API cache: {exc}", ToastType.ERROR)
 
     def _open_data_folder(self) -> None:
         from PySide6.QtCore import QUrl

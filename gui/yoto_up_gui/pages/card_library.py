@@ -13,6 +13,7 @@ from __future__ import annotations
 import math
 
 from PySide6.QtCore import Qt, Signal, QThread, QSize
+from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -85,6 +86,7 @@ class _CardTile(QFrame):
         super().__init__(parent)
         self._card_id = card_id
         self._selected = False
+        self._image_worker = None
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumSize(120, 150)
@@ -111,6 +113,10 @@ class _CardTile(QFrame):
         self._cover_label.setText("No Cover")
         layout.addWidget(self._cover_label, stretch=1)
 
+        # Load cover image if URL is available
+        if cover_url:
+            self._load_cover(cover_url)
+
         # Title
         self._title_label = QLabel(title)
         self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -122,6 +128,32 @@ class _CardTile(QFrame):
             font-weight: 500;
         """)
         layout.addWidget(self._title_label, stretch=0)
+
+    def _load_cover(self, url: str) -> None:
+        """Start async image download for the cover."""
+        from yoto_up_gui.widgets.image_loader import load_image_async
+        self._cover_label.setText("Loading...")
+        self._image_worker = load_image_async(
+            url,
+            callback=self._on_image_loaded,
+            error_callback=self._on_image_error,
+            size=QSize(180, 180),
+        )
+
+    def _on_image_loaded(self, url: str, image: QImage) -> None:
+        """Set the cover pixmap from the downloaded image."""
+        pixmap = QPixmap.fromImage(image)
+        self._cover_label.setPixmap(
+            pixmap.scaled(
+                self._cover_label.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+
+    def _on_image_error(self, url: str, error: str) -> None:
+        """Fall back to placeholder on error."""
+        self._cover_label.setText("No Cover")
 
     # -- selection -----------------------------------------------------------
 
@@ -277,7 +309,7 @@ class CardLibraryPage(QWidget):
         self._search_input.setPlaceholderText("Search cards...")
         self._search_input.setFixedHeight(36)
         self._search_input.setMinimumWidth(220)
-        self._search_input.setStyleSheet(f"""
+        self._search_default_style = f"""
             QLineEdit {{
                 background-color: {_BG_SURFACE};
                 color: {_TEXT};
@@ -289,9 +321,51 @@ class CardLibraryPage(QWidget):
             QLineEdit:focus {{
                 border: 1px solid {_ACCENT};
             }}
-        """)
+        """
+        self._search_active_style = f"""
+            QLineEdit {{
+                background-color: {_BG_SURFACE};
+                color: {_TEXT};
+                border: 2px solid {_ACCENT};
+                border-radius: 6px;
+                padding: 0 12px;
+                font-size: 13px;
+            }}
+        """
+        self._search_input.setStyleSheet(self._search_default_style)
         self._search_input.textChanged.connect(self._on_search_changed)
         top_bar.addWidget(self._search_input)
+
+        # Clear search button
+        self._clear_search_btn = QPushButton("\u2715")
+        self._clear_search_btn.setFixedSize(28, 28)
+        self._clear_search_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._clear_search_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {_OVERLAY};
+                color: {_TEXT};
+                border: none;
+                border-radius: 14px;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {_ACCENT};
+                color: {_BG_BASE};
+            }}
+        """)
+        self._clear_search_btn.setVisible(False)
+        self._clear_search_btn.clicked.connect(self._clear_search)
+        top_bar.addWidget(self._clear_search_btn)
+
+        # Result count label
+        self._result_count_label = QLabel()
+        self._result_count_label.setStyleSheet(f"""
+            color: {_ACCENT};
+            font-size: 12px;
+            padding: 0 4px;
+        """)
+        self._result_count_label.setVisible(False)
+        top_bar.addWidget(self._result_count_label)
 
         root.addLayout(top_bar)
 
@@ -401,6 +475,8 @@ class CardLibraryPage(QWidget):
 
     def _on_search_changed(self, text: str) -> None:
         query = text.strip().lower()
+        is_searching = bool(query)
+
         if not query:
             self._filtered_cards = list(self._all_cards)
         else:
@@ -414,9 +490,28 @@ class CardLibraryPage(QWidget):
                     (c.get("tags", []) or [])
                 ).lower()
             ]
+
+        # Update search UX elements
+        self._clear_search_btn.setVisible(is_searching)
+        self._search_input.setStyleSheet(
+            self._search_active_style if is_searching else self._search_default_style
+        )
+        if is_searching:
+            count = len(self._filtered_cards)
+            self._result_count_label.setText(
+                f"{count} card{'s' if count != 1 else ''} found"
+            )
+            self._result_count_label.setVisible(True)
+        else:
+            self._result_count_label.setVisible(False)
+
         self._current_page = 0
         self._selected_index = 0
         self._render_page()
+
+    def _clear_search(self) -> None:
+        """Clear the search input and reset filter."""
+        self._search_input.clear()
 
     # ------------------------------------------------------------------
     # Pagination
@@ -571,7 +666,11 @@ class CardLibraryPage(QWidget):
     def _update_page_label(self) -> None:
         page_display = self._current_page + 1
         total = self.total_pages
-        self._page_label.setText(f"Page {page_display} of {total}")
+        card_count = len(self._filtered_cards)
+        self._page_label.setText(
+            f"{card_count} card{'s' if card_count != 1 else ''} | "
+            f"Page {page_display} of {total}"
+        )
         self._btn_prev.setEnabled(self._current_page > 0)
         self._btn_next.setEnabled(self._current_page < total - 1)
 

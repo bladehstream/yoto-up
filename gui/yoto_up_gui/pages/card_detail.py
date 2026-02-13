@@ -10,10 +10,11 @@ from __future__ import annotations
 from PySide6.QtCore import (
     QEasingCurve,
     QPropertyAnimation,
+    QSize,
     Qt,
     Signal,
 )
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsOpacityEffect,
@@ -104,6 +105,7 @@ class CardDetailOverlay(QWidget):
         self._client = None
         self._card_id: str | None = None
         self._card_data: dict | None = None
+        self._image_worker = None
 
         # Overlay covers the entire parent area
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
@@ -460,12 +462,12 @@ class CardDetailOverlay(QWidget):
         else:
             self._status_badge.setVisible(False)
 
-        # Cover placeholder (actual image loading is left to a future
-        # network-image widget; for now we display the URL or a placeholder)
-        cover = (meta.get("cover") or {}).get("imageL")
-        if cover:
-            self._cover_label.setText("Cover image available")
+        # Cover image -- load asynchronously if URL is available
+        cover_url = (meta.get("cover") or {}).get("imageL")
+        if cover_url:
+            self._load_cover_image(cover_url)
         else:
+            self._cover_label.setPixmap(QPixmap())
             self._cover_label.setText("No Cover Image")
 
         # Description
@@ -563,6 +565,36 @@ class CardDetailOverlay(QWidget):
                     padding-left: 16px;
                 """)
                 self._chapters_layout.addWidget(tr_label)
+
+    # ------------------------------------------------------------------
+    # Cover image loading
+    # ------------------------------------------------------------------
+
+    def _load_cover_image(self, url: str) -> None:
+        """Start async download of the cover image."""
+        from yoto_up_gui.widgets.image_loader import load_image_async
+        self._cover_label.setText("Loading...")
+        self._image_worker = load_image_async(
+            url,
+            callback=self._on_cover_loaded,
+            error_callback=self._on_cover_error,
+            size=QSize(580, 220),
+        )
+
+    def _on_cover_loaded(self, url: str, image: QImage) -> None:
+        """Display the downloaded cover image."""
+        pixmap = QPixmap.fromImage(image)
+        self._cover_label.setPixmap(
+            pixmap.scaled(
+                self._cover_label.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+
+    def _on_cover_error(self, url: str, error: str) -> None:
+        """Fall back to placeholder text on error."""
+        self._cover_label.setText("No Cover Image")
 
     # ------------------------------------------------------------------
     # Animation
