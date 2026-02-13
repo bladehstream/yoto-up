@@ -18,7 +18,7 @@ def get_devices(client: YotoClient) -> list[Device]:
     Returns a list of :class:`Device` instances.  Devices that fail to
     parse are logged and skipped.
     """
-    resp = client.get("/device")
+    resp = client.get("/device-v2/devices/mine")
     resp.raise_for_status()
     data = resp.json()
 
@@ -42,7 +42,7 @@ def get_device_status(client: YotoClient, device_id: str) -> DeviceStatus:
 
     Raises :class:`httpx.HTTPStatusError` on non-2xx responses.
     """
-    resp = client.get(f"/device/{device_id}/status")
+    resp = client.get(f"/device-v2/{device_id}/status")
     resp.raise_for_status()
     data = resp.json()
 
@@ -63,7 +63,7 @@ def get_device_config(client: YotoClient, device_id: str) -> DeviceObject:
 
     Raises :class:`httpx.HTTPStatusError` on non-2xx responses.
     """
-    resp = client.get(f"/device/{device_id}")
+    resp = client.get(f"/device-v2/{device_id}/config")
     resp.raise_for_status()
     data = resp.json()
 
@@ -105,6 +105,6 @@ def update_device_config(
         "name": name,
         "config": config,
     }
-    resp = client.put(f"/device/{device_id}", json=payload)
+    resp = client.put(f"/device-v2/{device_id}", json=payload)
     resp.raise_for_status()
     return resp.json()
